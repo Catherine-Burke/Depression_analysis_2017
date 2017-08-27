@@ -1,0 +1,176 @@
+---
+title: "Depression Microbiome Analysis"
+author: "Cath Burke"
+date: "123 August 2017"
+output: html_document
+---
+
+
+```{r load packages}
+library("phyloseq")
+library("ggplot2")
+library("vegan")
+library("reshape2")
+library("tidyverse")
+```
+#Load your data into Phyloseq
+```{r Loading data}
+#Open script in your working directory
+#Set working directory, to source file location
+#Create a folder called data in this directory - store all your raw data here
+#first we assign names to filesbiom table must be
+biom<-"data/otu_table_final1_json.biom"
+#Biom table must be in json format
+#Before reading the map file, remove the hash from the first line of the QIIME mapping file
+map<-read.table("data/mapping_depression_f1.txt", header=TRUE, row.names=1)
+#Normally would just use the read_tree command, but this particular tree is a bit different to ususal.
+tree<-read_tree("data/rep_set.tre")
+#import data to phyloseq
+depression2017<-import_biom(biom, treefilename=tree)
+depression_map<-sample_data(map)
+depression2017<-merge_phyloseq(depression2017,depression_map)
+depression2017
+colnames(tax_table(depression2017)) = c("Domain", "Phylum", "Class", "Order", "Family", "Genus", "Species")
+```
+#Explore the data
+```{r, explore data}
+#look at elements of taxonomy table and otu table
+#This shows the first 10 rows of the taxonomy table for your phyloseq object
+tax_table(depression2017)[1:10]
+#You can subset to a specific row by name - insert a row name in the ""
+tax_table(depression2017)["",]
+#this returns the first 10 rows and columns of the otu table
+otu_table(depression2017)[1:10,1:10]
+#plot data - generic plotting options in phyloseq.
+#plot_bar(practice2017)
+#plot_bar(practice2017,x="Disease_status")
+#plot_bar(practice2017,x="Disease_status", fill="Phylum")
+#You can also use ggplot for better plotting, but takes a bit of data wrangling, more on that below.
+
+#Five number summary of sequence coverage of samples
+fivenum(colSums(otu_table(depression2017)))
+#View number of sequences per sample
+seq_sums<-data.frame(sort(sample_sums(depression2017)))
+```
+#Rarefaction analysis
+```{r, rarefaction}
+#Create a rarefaction curve to find the appropraite place for rarefying your data. Uses vegan for calculating the curve, and base R for plotting. 
+#Plot rarecurve
+t_otu_practice2017<-as.matrix(t(otu_table(practice2017)))
+#col <- c("forestgreen", "red", "hotpink", "black", "blue")
+#cols<-col[sinus2017_data$Type]
+curve<-rarecurve(t_otu_practice2017, step=500, label=FALSE, xlim= c(0,12000), ylim=c(0,1500), ylab = "OTU Count", xaxt="n")
+axis(1, xaxp=c(0, 12000, 10))
+#place a line over the curve where you proppose to rarefy, in this example I used 6000 sequences
+abline(v=5381, col="red")
+#Then rarefy at the appropriate depth - in this example I used 6000 sequences.
+practice2017_rare<-rarefy_even_depth(practice2017, sample.size=5381, rngseed=711, replace=FALSE, trimOTUs=TRUE)
+```
+#subsetting phyloseq objects
+```{r, subsetting phyloseq objects}
+#You many want to remove certain samples or OTUs from the analysis.  There are several ways to do this in Phyloseq, all require creating a new Phyloseq object.
+#Removed participant incorrectly enrolled
+depression2017_1<-subset_samples(depression2017, !(SampleID %in% c("P9.pre","P7.pre","P7.post")))
+
+#Rarefy to 11779
+depression2017_1rare<-rarefy_even_depth(depression2017_1, sample.size=11779, rngseed=711, replace=FALSE, trimOTUs=TRUE)
+
+sample_data(practice2017_rare_controls)
+#Second example, subset to samples that match everything except the string in a column of the sample data
+practice2017_rare_disease<-subset_samples(practice2017_rare, Disease_status!="control")
+#Now check the sample data for your new object to make sure it did what you think it did.  In this example I'm only returning the column that lists Disease_status
+sample_data(practice2017_rare_disease)$Disease_status
+#Third example, subset to samples that match several strings in a column of the sample data
+practice2017_rare_disease2<-subset_samples(practice2017_rare, Disease_status%in%c("mdd", "recovering_mdd"))
+#And check the sample data as before.
+sample_data(practice2017_rare_disease2)$Disease_status
+#Forth example, subset to samples that match everything except several strings in a column of the sample data
+practice2017_rare_controls2<-subset_samples(practice2017_rare, !(Disease_status%in%c("mdd", "recovering_mdd")))
+#And check the sample data as before.
+sample_data(practice2017_rare_controls2)$Disease_status
+```
+
+#Alpha diversity analysis
+```{r, alpha diversity}
+#Once you have rarefied your data, explore the level of alpha diversity.  Uses phyloseq plot function which is built on ggplot2.  The x value will determine how samples are grouped along the x axis.
+plot_richness(practice2017_rare, x="Disease_status", measures=c("Observed", "Chao1","Shannon"))+
+  geom_boxplot()+xlab("Group")+ylab("Diversity")
+#Convert alpha diversity estimates to a data form we can use for statistical testing
+practice2017_rare_richness<-as.matrix(estimate_richness(practice2017_rare, measures=c("Observed","Chao1","Shannon")))
+#row.names(practice2017_rare_richness)<-row.names(sample_data(practice2017_rare))
+practice2017_rare_richness<-cbind(practice2017_rare_richness,sample_data(practice2017_rare))
+practice2017_rare_richness
+#For comaparisons of alpha diversity of more than two groups, use the Kruskal-Wallis test 
+#Test if alpha diversity (observed) is significantly different between Disease_status groups
+kruskal.test(Observed ~ Disease_status, data=practice2017_rare_richness)
+#Now test if diversity is significantly different between controls and patients who were ever depressed (and recovering mdd groups (Original_status)
+#only two groups here so use Man-Whitney U test
+
+#wilcox.test(Observed ~ Disease_status, data=practice2017_rare_richness)
+```
+###UP TO HERE - DO EXAMINATION OF NEGATIVE AND POSITIVE CONTROLS
+##Data cleaning and transformation
+```{r data cleaning and transformation}
+#Create an object with realtive abundances instead of counts
+practice2017_rare_rel<-transform_sample_counts(practice2017_rare, function(x) x/sum(x))
+#Filter OTUs present at less that 0.001% mean abundance
+practice2017_rare_rel_fil1<-filter_taxa(practice2017_rare_rel, function(x) mean(x) > 1e-5, TRUE)
+```
+
+##Plotting functions
+```{r plotting}
+#I use the psmelt function to get the data into a form that ggplot likes, dplyr to filter that data I want, and ggplot to do the plotting
+#Melt data into a "long" form
+practice_smelt<-psmelt(practice2017_rare_rel_fil1)
+head(practice_smelt)
+#Let's plot the overall taxa by group (average relative abundance per group) and colour by phyla
+#plot every sample by phyla, faceting into disease groups
+ggplot(practice_smelt, aes(x=Sample, y=Abundance, fill=Phylum))+geom_bar(stat="identity")+facet_grid(.~Disease_status, scales="free")
+#calculate the sum of abundance for each phyla per patient, then average out across groups and plot.
+phyla_plot<-practice_smelt %>% group_by(Sample, Phylum, Disease_status) %>%
+  summarise(phylum_sum=sum(Abundance))%>%
+  group_by(Disease_status, Phylum) %>% summarise(phylum_av=mean(phylum_sum))
+ggplot(phyla_plot, aes(x=Disease_status, y=phylum_av, fill=Phylum)) + geom_bar(stat="identity")+facet_grid(.~Disease_status, scales="free")+
+  guides(fill=guide_legend(ncol=1))+theme(axis.text.x = element_text(angle = 90, hjust = 1),legend.key.size = unit(0.5,"line")) +ggtitle("Average Phyla per Group")
+
+#Top ten OTUs per patient coloured by Genus
+topten<-practice_smelt %>% group_by(Sample) %>% top_n(10,Abundance) %>%
+  ggplot(aes(x=Sample, y=Abundance, fill=Genus))+geom_bar(stat="identity") +
+  facet_grid(.~Disease_status, scales="free")+
+  guides(fill=guide_legend(ncol=1))+ 
+  theme(axis.text.x = element_text(angle = 90, hjust = 1),legend.key.size = unit(0.5,"line"))
+  
+
+```
+##Beta-Diversity
+```{r, beta-diversity}
+#filter out rare OTUs
+depression2017_1rare_fil<- filter_taxa(depression2017_1rare, function(x) sum(x)>=10 & sum(x>0)>0.1*length(x), TRUE)
+
+depression2017_wuf<-distance(depression2017_1rare_fil, "wunifrac", type="samples")
+#Warning message:
+#In UniFrac(physeq, weighted = TRUE, ...) :
+  #Randomly assigning root as -- 193336 -- in the phylogenetic tree in the data you provided.
+depression2017_wuf_ord<-ordinate(depression2017_1rare_fil, method="PCoA", distance=depression2017_wuf)
+plot_ordination(depression2017_1rare_fil, depression2017_wuf_ord, type="samples",color="Participant")
+
+pre_con_rare_fil<-subset_samples(depression2017_1rare_fil, Participant %in% c("pre","Con"))
+pre_con_ord<-ordinate(pre_con_rare_fil, method="PCoA", "wunifrac")
+plot_ordination(pre_con_rare_fil,pre_con_ord, color="Participant")
+
+
+```
+
+
+
+
+
+## Including Plots
+
+You can also embed plots, for example:
+
+```{r pressure, echo=FALSE}
+plot(pressure)
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
